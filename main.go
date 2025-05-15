@@ -27,7 +27,7 @@ func formatDate(birthday *people.Date) string {
 	return fmt.Sprintf("%04d-%02d-%02d", year, birthday.Month, birthday.Day)
 }
 
-func getBirthdaysToImport(ctx context.Context, tokenSource oauth2.TokenSource) (map[string]string, error) {
+func getBirthdaysToImport(ctx context.Context, tokenSource oauth2.TokenSource) ([][]string, error) {
 	// Initialize People API client
 	peopleService, err := people.NewService(ctx, option.WithTokenSource(tokenSource))
 	if err != nil {
@@ -42,7 +42,7 @@ func getBirthdaysToImport(ctx context.Context, tokenSource oauth2.TokenSource) (
 	}
 
 	// birthdays is a map with a Person, and the Formatted date
-	birthdays := make(map[string]string)
+	birthdays := [][]string{}
 	for _, person := range connections.Connections {
 		if len(person.Birthdays) <= 0 {
 			continue
@@ -58,7 +58,7 @@ func getBirthdaysToImport(ctx context.Context, tokenSource oauth2.TokenSource) (
 			continue
 		}
 
-		birthdays[formatDate(birthday)] = name
+		birthdays = append(birthdays, []string{formatDate(birthday), name})
 	}
 	return birthdays, nil
 }
@@ -83,8 +83,8 @@ func main() {
 	}
 
 	fmt.Printf("Found %d birthdays to import.\n", len(birthdaysToImport))
-	for date, name := range birthdaysToImport {
-		fmt.Printf("\t Date: %s, Name: %s\n", date, name)
+	for i, event := range birthdaysToImport {
+		fmt.Printf("\t %d: Date: %s, Name: %s\n", i+1, event[0], event[1])
 	}
 
 	if *druRun {
@@ -111,17 +111,17 @@ func main() {
 	log.Printf("Created calendar: %s", cal.Summary)
 
 	// Create an event for each birthday
-	for birthdate, name := range birthdaysToImport {
+	for _, bdate := range birthdaysToImport {
 		// Create a new event for the birthday, in the newly created calendar. Make it a recurring and all day event.
 		event := &calendar.Event{
-			Summary:     name,
+			Summary:     bdate[1],
 			Description: "Birthday",
 			Start: &calendar.EventDateTime{
-				Date:     birthdate,
+				Date:     bdate[0],
 				TimeZone: "UTC",
 			},
 			End: &calendar.EventDateTime{
-				Date:     birthdate,
+				Date:     bdate[0],
 				TimeZone: "UTC",
 			},
 			Recurrence: []string{
@@ -132,9 +132,9 @@ func main() {
 		// Insert the event into the calendar
 		_, err := calendarService.Events.Insert(cal.Id, event).Do()
 		if err != nil {
-			log.Printf("Unable to create event for %s: %v", name, err)
+			log.Printf("Unable to create event for %s: %v", bdate[1], err)
 			continue
 		}
-		log.Printf("Created event for %s", name)
+		log.Printf("Created event for %s", bdate[1])
 	}
 }
