@@ -2,14 +2,11 @@
 
 This script imports birthdays from Google Contacts into a dedicated Google Calendar. It creates a new calendar named "Birthdays from Contacts" and adds recurring birthday events for all contacts that have birthday information.
 
-## Google Contacts Birthdays Importer
-This is a simple project for extracting birthdays from your Google Contacts, and importing them into your Google
-Calendar.
+This is needed for me since I live in Germany, and due to [regulatory issues](https://support.google.com/calendar/community-guide/302081881/birthdays-from-contacts-no-longer-showing-in-google-calendar?hl=en), Google Contacts does not show birthdays in the calendar app.
 
 #### Features
 - Extracts birthdays from Google Contacts
 - Imports birthdays into Google Calendar
-- Handles duplicates
 
 #### Authentication
 This is a bring Your Own Authentication Token kind of project :sweat_smile: I have no published app for this (and don't

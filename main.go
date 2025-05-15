@@ -19,7 +19,7 @@ const (
 )
 
 func formatDate(birthday *people.Date) string {
-	// If Year is 0, use a default year (e.g., 2000)
+	// If Year is 0, use a default year (e.g., 2000). Cannot leave it empty using the API.
 	year := birthday.Year
 	if year == 0 {
 		year = 1970
@@ -27,54 +27,24 @@ func formatDate(birthday *people.Date) string {
 	return fmt.Sprintf("%04d-%02d-%02d", year, birthday.Month, birthday.Day)
 }
 
-func main() {
-	accessToken := flag.String("token", "", "Access token for Google APIs")
-	flag.Parse()
-
-	if *accessToken == "" {
-		log.Fatal("Access token is required")
-	}
-
-	ctx := context.Background()
-
-	// Create an OAuth2 token source with the access token
-	tokenSource := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: *accessToken})
-
+func getBirthdaysToImport(ctx context.Context, tokenSource oauth2.TokenSource) (map[string]string, error) {
 	// Initialize People API client
 	peopleService, err := people.NewService(ctx, option.WithTokenSource(tokenSource))
 	if err != nil {
-		log.Fatalf("Unable to create People service: %v", err)
+		return nil, fmt.Errorf("unable to create People service: %v", err)
 	}
-
-	// Initialize Calendar API client
-	calendarService, err := calendar.NewService(ctx, option.WithTokenSource(tokenSource))
-	if err != nil {
-		log.Fatalf("Unable to create Calendar service: %v", err)
-	}
-	// Create a new calendar for birthdays. Create a new calendar for every import. To avoid dealing with duplicates handling.
-	log.Println("Creating a new calendar for birthdays.")
-	cal, err := calendarService.Calendars.Insert(&calendar.Calendar{
-		Summary:     calendarName,
-		Description: calendarDescription,
-		TimeZone:    "UTC",
-	}).Do()
-	if err != nil {
-		log.Fatalf("Unable to create calendar: %v", err)
-	}
-	log.Printf("Created calendar: %s", cal.Summary)
-
-	// Fetch contacts with birthdays
 	connections, err := peopleService.People.Connections.List("people/me").
 		PersonFields("names,birthdays").
 		PageSize(1000).
 		Do()
 	if err != nil {
-		log.Fatalf("Unable to retrieve contacts: %v", err)
+		return nil, fmt.Errorf("unable to retrieve contacts: %v", err)
 	}
 
-	// Process each contact
+	// birthdays is a map with a Person, and the Formatted date
+	birthdays := make(map[string]string)
 	for _, person := range connections.Connections {
-		if len(person.Birthdays) == 0 {
+		if len(person.Birthdays) <= 0 {
 			continue
 		}
 
@@ -88,18 +58,70 @@ func main() {
 			continue
 		}
 
-		log.Printf("Found birthday for %s - on %d/%d/%d", name, birthday.Day, birthday.Month, birthday.Year)
+		birthdays[formatDate(birthday)] = name
+	}
+	return birthdays, nil
+}
 
-		// Create a new event for the birthday, in the newly created calendar. Make it a recurring and all day event. Not all of the contacts have a year of birth, so we only include the year for the ones that have it.
+func main() {
+	accessToken := flag.String("token", "", "Access token for Google APIs")
+	druRun := flag.Bool("dry-run", false, "Dry run mode (no changes made)")
+	flag.Parse()
+
+	ctx := context.Background()
+
+	if *accessToken == "" {
+		log.Fatal("Access token is required")
+	}
+
+	// Create an OAuth2 token source with the access token
+	tokenSource := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: *accessToken})
+
+	birthdaysToImport, err := getBirthdaysToImport(ctx, tokenSource)
+	if err != nil {
+		log.Fatalf("Error fetching birthdays: %v", err)
+	}
+
+	fmt.Printf("Found %d birthdays to import.\n", len(birthdaysToImport))
+	for date, name := range birthdaysToImport {
+		fmt.Printf("\t Date: %s, Name: %s\n", date, name)
+	}
+
+	if *druRun {
+		log.Printf("Dry run, so we are done here.")
+		return
+	}
+
+	// Initialize Calendar API client
+	calendarService, err := calendar.NewService(ctx, option.WithTokenSource(tokenSource))
+	if err != nil {
+		log.Fatalf("Unable to create Calendar service: %v", err)
+	}
+
+	// Create a new calendar for birthdays. Create a new calendar for every import. To avoid dealing with duplicates handling.
+	log.Println("Creating a new calendar for birthdays.")
+	cal, err := calendarService.Calendars.Insert(&calendar.Calendar{
+		Summary:     calendarName,
+		Description: calendarDescription,
+		TimeZone:    "UTC",
+	}).Do()
+	if err != nil {
+		log.Fatalf("Unable to create calendar: %v", err)
+	}
+	log.Printf("Created calendar: %s", cal.Summary)
+
+	// Create an event for each birthday
+	for birthdate, name := range birthdaysToImport {
+		// Create a new event for the birthday, in the newly created calendar. Make it a recurring and all day event.
 		event := &calendar.Event{
 			Summary:     name,
 			Description: "Birthday",
 			Start: &calendar.EventDateTime{
-				Date:     formatDate(birthday),
+				Date:     birthdate,
 				TimeZone: "UTC",
 			},
 			End: &calendar.EventDateTime{
-				Date:     formatDate(birthday),
+				Date:     birthdate,
 				TimeZone: "UTC",
 			},
 			Recurrence: []string{
