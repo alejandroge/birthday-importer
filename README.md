@@ -28,9 +28,12 @@ plan to) but one can get an access token from Google via using their own tool: [
 
 ```bash
 # Get the access token using oauth2l (not included)
-ACCESS_TOKEN=$(oauth2l fetch --credentials /path/to/credentials.json \
-  https://www.googleapis.com/auth/contacts.readonly \
-  https://www.googleapis.com/auth/calendar)
+ACCESS_TOKEN=$(
+    oauth2l fetch --credentials .client_secret.json \
+      https://www.googleapis.com/auth/contacts.readonly \
+      https://www.googleapis.com/auth/calendar \
+      2>/dev/null | tail -n 1 | tr -d '\r\n'
+  )
 
 # Run the script with your access token
 go run main.go -token "$ACCESS_TOKEN"
