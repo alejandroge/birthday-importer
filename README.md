@@ -1,6 +1,6 @@
 # Birthday Importer
 
-This script imports birthdays from Google Contacts into a dedicated Google Calendar. It creates a new calendar named "Birthdays from Contacts" and adds recurring birthday events for all contacts that have birthday information.
+This project imports birthdays from Google Contacts into a dedicated Google Calendar.
 
 This is needed for me since I live in Germany, and due to [regulatory issues](https://support.google.com/calendar/community-guide/302081881/birthdays-from-contacts-no-longer-showing-in-google-calendar?hl=en), Google Contacts does not show birthdays in the calendar app.
 
@@ -9,46 +9,48 @@ This is needed for me since I live in Germany, and due to [regulatory issues](ht
 - Imports birthdays into Google Calendar
 
 #### Authentication
-This is a bring Your Own Authentication Token kind of project :sweat_smile: I have no published app for this (and don't
-plan to) but one can get an access token from Google via using their own tool: [oauth2l](https://github.com/google/oauth2l)
+Authentication is handled with [oauth2l](https://github.com/google/oauth2l) and a local oauth cache file.
+
+`run.sh` expects a cached refresh token in `.oauth2l-cache.json` and uses it to get a fresh access token on every run.
 
 #### Prerequisites
 
 - Go 1.21 or later
-- Access token from oauth2l with the following required scopes:
+- `oauth2l` installed
+- OAuth client credentials in `.client_secret.json` (desktop app credentials)
+- OAuth scopes:
   - `https://www.googleapis.com/auth/contacts.readonly`
   - `https://www.googleapis.com/auth/calendar`
 
 ## Installation
 
 1. Clone this repository
-2. Run `go mod tidy` to download dependencies
+2. Build the binary:
+
+```bash
+go build -o importer .
+```
+
+3. One-time OAuth cache setup:
+
+Run this once to initialize `.oauth2l-cache.json` (interactive consent flow):
+
+```bash
+./setup.sh
+```
 
 ## Usage
 
-```bash
-# Get the access token using oauth2l (not included)
-ACCESS_TOKEN=$(
-    oauth2l fetch --credentials .client_secret.json \
-      https://www.googleapis.com/auth/contacts.readonly \
-      https://www.googleapis.com/auth/calendar \
-      2>/dev/null | tail -n 1 | tr -d '\r\n'
-  )
+After the cache is initialized, run:
 
-# Run the script with your access token
-go run main.go -token "$ACCESS_TOKEN"
+```bash
+./run.sh
 ```
 
-The script will:
-- Create a new calendar named "Birthdays from Contacts" if it doesn't exist
-- Import birthdays from your contacts as recurring yearly events
-- Skip any contacts without birthday information
-- Log the progress as it runs
+If `.oauth2l-cache.json` does not exist (or has no refresh token), `run.sh` exits with an error.
 
-## Error Handling
+One can do a dry run with:
 
-The script will:
-- Exit if no access token is provided
-- Exit if it fails to initialize the Google API clients
-- Exit if it fails to create/access the calendar
-- Skip individual contacts if their birthday event creation fails (with logging)
+```bash
+./run.sh --dry-run
+```
