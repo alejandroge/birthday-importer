@@ -1,3 +1,4 @@
 importer
 .client_secret.json
 .oauth2l-cache.json
+cron.log
