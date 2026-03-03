@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"strings"
 
 	"context"
 
@@ -16,7 +17,15 @@ import (
 const (
 	calendarName        = "Birthdays from Contacts"
 	calendarDescription = "Calendar containing birthdays imported from Google Contacts"
+	calendarMarker      = "[managed-by:birthday-importer;v=1]"
+	eventManagedByKey   = "managedBy"
+	eventManagedByValue = "birthday-importer"
 )
+
+type birthdayEntry struct {
+	Date string
+	Name string
+}
 
 func formatDate(birthday *people.Date) string {
 	// If Year is 0, use a default year (e.g., 2000). Cannot leave it empty using the API.
@@ -27,7 +36,7 @@ func formatDate(birthday *people.Date) string {
 	return fmt.Sprintf("%04d-%02d-%02d", year, birthday.Month, birthday.Day)
 }
 
-func getBirthdaysToImport(ctx context.Context, tokenSource oauth2.TokenSource) ([][]string, error) {
+func getBirthdaysToImport(ctx context.Context, tokenSource oauth2.TokenSource) ([]birthdayEntry, error) {
 	// Initialize People API client
 	peopleService, err := people.NewService(ctx, option.WithTokenSource(tokenSource))
 	if err != nil {
@@ -41,8 +50,7 @@ func getBirthdaysToImport(ctx context.Context, tokenSource oauth2.TokenSource) (
 		return nil, fmt.Errorf("unable to retrieve contacts: %v", err)
 	}
 
-	// birthdays is a map with a Person, and the Formatted date
-	birthdays := [][]string{}
+	birthdays := []birthdayEntry{}
 	for _, person := range connections.Connections {
 		if len(person.Birthdays) <= 0 {
 			continue
@@ -58,9 +66,120 @@ func getBirthdaysToImport(ctx context.Context, tokenSource oauth2.TokenSource) (
 			continue
 		}
 
-		birthdays = append(birthdays, []string{formatDate(birthday), name})
+		birthdays = append(birthdays, birthdayEntry{
+			Date: formatDate(birthday),
+			Name: name,
+		})
 	}
 	return birthdays, nil
+}
+
+func managedCalendarDescription() string {
+	return fmt.Sprintf("%s %s", calendarDescription, calendarMarker)
+}
+
+func findOrCreateManagedCalendar(calendarService *calendar.Service) (string, error) {
+	log.Println("Looking for managed calendar.")
+	legacyCalendarID := ""
+	pageToken := ""
+
+	for {
+		calendarListCall := calendarService.CalendarList.List().PageToken(pageToken)
+		calendars, err := calendarListCall.Do()
+		if err != nil {
+			return "", fmt.Errorf("unable to list calendars: %v", err)
+		}
+
+		for _, item := range calendars.Items {
+			if item.Summary != calendarName {
+				continue
+			}
+
+			if strings.Contains(item.Description, calendarMarker) {
+				log.Printf("Found managed calendar: %s", item.Summary)
+				return item.Id, nil
+			}
+
+			if item.Description == calendarDescription && legacyCalendarID == "" {
+				legacyCalendarID = item.Id
+			}
+		}
+
+		if calendars.NextPageToken == "" {
+			break
+		}
+
+		pageToken = calendars.NextPageToken
+	}
+
+	if legacyCalendarID != "" {
+		log.Println("Found legacy calendar without marker. Marking as managed.")
+		_, err := calendarService.Calendars.Patch(legacyCalendarID, &calendar.Calendar{
+			Description: managedCalendarDescription(),
+		}).Do()
+		if err != nil {
+			return "", fmt.Errorf("unable to mark existing calendar as managed: %v", err)
+		}
+		log.Println("Marked legacy calendar as managed.")
+		return legacyCalendarID, nil
+	}
+
+	log.Println("Managed calendar not found. Creating a new one.")
+	cal, err := calendarService.Calendars.Insert(&calendar.Calendar{
+		Summary:     calendarName,
+		Description: managedCalendarDescription(),
+		TimeZone:    "UTC",
+	}).Do()
+	if err != nil {
+		return "", fmt.Errorf("unable to create calendar: %v", err)
+	}
+
+	log.Printf("Created calendar: %s", cal.Summary)
+	return cal.Id, nil
+}
+
+func deleteManagedEvents(calendarService *calendar.Service, calendarID string) error {
+	log.Println("Looking for previously managed events to delete.")
+	type managedEvent struct {
+		ID      string
+		Summary string
+	}
+
+	eventsToDelete := []managedEvent{}
+	pageToken := ""
+
+	for {
+		events, err := calendarService.Events.List(calendarID).
+			PrivateExtendedProperty(fmt.Sprintf("%s=%s", eventManagedByKey, eventManagedByValue)).
+			PageToken(pageToken).
+			Do()
+		if err != nil {
+			return fmt.Errorf("unable to list managed events: %v", err)
+		}
+
+		for _, event := range events.Items {
+			eventsToDelete = append(eventsToDelete, managedEvent{
+				ID:      event.Id,
+				Summary: event.Summary,
+			})
+		}
+
+		if events.NextPageToken == "" {
+			break
+		}
+
+		pageToken = events.NextPageToken
+	}
+
+	for _, event := range eventsToDelete {
+		if err := calendarService.Events.Delete(calendarID, event.ID).Do(); err != nil {
+			return fmt.Errorf("unable to delete managed event %s: %v", event.ID, err)
+		}
+		log.Printf("Deleted managed event: %s (%s)", event.Summary, event.ID)
+	}
+
+	log.Printf("Deleted %d managed events.", len(eventsToDelete))
+	return nil
 }
 
 func main() {
@@ -84,7 +203,7 @@ func main() {
 
 	fmt.Printf("Found %d birthdays to import.\n", len(birthdaysToImport))
 	for i, event := range birthdaysToImport {
-		fmt.Printf("\t %d: Date: %s, Name: %s\n", i+1, event[0], event[1])
+		fmt.Printf("\t %d: Date: %s, Name: %s\n", i+1, event.Date, event.Name)
 	}
 
 	if *druRun {
@@ -98,30 +217,32 @@ func main() {
 		log.Fatalf("Unable to create Calendar service: %v", err)
 	}
 
-	// Create a new calendar for birthdays. Create a new calendar for every import. To avoid dealing with duplicates handling.
-	log.Println("Creating a new calendar for birthdays.")
-	cal, err := calendarService.Calendars.Insert(&calendar.Calendar{
-		Summary:     calendarName,
-		Description: calendarDescription,
-		TimeZone:    "UTC",
-	}).Do()
+	calendarID, err := findOrCreateManagedCalendar(calendarService)
 	if err != nil {
-		log.Fatalf("Unable to create calendar: %v", err)
+		log.Fatalf("Unable to find or create managed calendar: %v", err)
 	}
-	log.Printf("Created calendar: %s", cal.Summary)
+
+	if err := deleteManagedEvents(calendarService, calendarID); err != nil {
+		log.Fatalf("Unable to delete previously managed events: %v", err)
+	}
 
 	// Create an event for each birthday
 	for _, bdate := range birthdaysToImport {
-		// Create a new event for the birthday, in the newly created calendar. Make it a recurring and all day event.
+		// Create a new event for the birthday as a recurring all-day event.
 		event := &calendar.Event{
-			Summary:     bdate[1],
+			Summary:     bdate.Name,
 			Description: "Birthday",
+			ExtendedProperties: &calendar.EventExtendedProperties{
+				Private: map[string]string{
+					eventManagedByKey: eventManagedByValue,
+				},
+			},
 			Start: &calendar.EventDateTime{
-				Date:     bdate[0],
+				Date:     bdate.Date,
 				TimeZone: "UTC",
 			},
 			End: &calendar.EventDateTime{
-				Date:     bdate[0],
+				Date:     bdate.Date,
 				TimeZone: "UTC",
 			},
 			Recurrence: []string{
@@ -130,11 +251,11 @@ func main() {
 		}
 
 		// Insert the event into the calendar
-		_, err := calendarService.Events.Insert(cal.Id, event).Do()
+		_, err := calendarService.Events.Insert(calendarID, event).Do()
 		if err != nil {
-			log.Printf("Unable to create event for %s: %v", bdate[1], err)
+			log.Printf("Unable to create event for %s: %v", bdate.Name, err)
 			continue
 		}
-		log.Printf("Created event for %s", bdate[1])
+		log.Printf("Created event for %s", bdate.Name)
 	}
 }

@@ -7,6 +7,7 @@ This is needed for me since I live in Germany, and due to [regulatory issues](ht
 #### Features
 - Extracts birthdays from Google Contacts
 - Imports birthdays into Google Calendar
+- Reuses a single managed calendar and refreshes only managed birthday events
 
 #### Authentication
 Authentication is handled with [oauth2l](https://github.com/google/oauth2l) and a local oauth cache file.
